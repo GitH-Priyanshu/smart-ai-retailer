@@ -2,7 +2,6 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("vera_guard")
@@ -106,9 +105,6 @@ class GuardLayer:
         merchant_id: Optional[str],
         message: str,
         prior_inbounds: List[str],
-        merchant: Optional[Dict[str, Any]] = None,
-        trigger: Optional[Dict[str, Any]] = None,
-        prior_outbound_body: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Runs PRE checks on incoming /v1/reply message:
@@ -124,15 +120,7 @@ class GuardLayer:
             }, None
 
         # 2. Auto-Reply Detection
-        auto_reply_resp = self.check_auto_reply(
-            conversation_id=conversation_id,
-            merchant_id=merchant_id,
-            message=message,
-            prior_inbounds=prior_inbounds,
-            merchant=merchant,
-            trigger=trigger,
-            prior_outbound_body=prior_outbound_body,
-        )
+        auto_reply_resp = self.check_auto_reply(conversation_id, merchant_id, message, prior_inbounds)
         if auto_reply_resp:
             return auto_reply_resp, None
 
@@ -163,9 +151,6 @@ class GuardLayer:
         merchant_id: Optional[str],
         message: str,
         prior_inbounds: List[str],
-        merchant: Optional[Dict[str, Any]] = None,
-        trigger: Optional[Dict[str, Any]] = None,
-        prior_outbound_body: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         norm_incoming = normalize_text(message)
         is_canned = self.is_canned_text(message)
@@ -182,75 +167,11 @@ class GuardLayer:
         self._auto_reply_counts[key] = count
 
         if count == 1:
-            owner_name = "there"
-            if merchant:
-                ident = merchant.get("identity", {})
-                owner_first = ident.get("owner_first_name")
-                biz_name = ident.get("name", "")
-                cat_slug = merchant.get("category_slug", "")
-
-                if cat_slug == "dentists" or "dr" in biz_name.lower():
-                    if owner_first:
-                        owner_name = f"Dr. {owner_first}" if not owner_first.lower().startswith("dr") else owner_first
-                    elif "dr." in biz_name.lower() or "dr " in biz_name.lower():
-                        m = re.search(r"Dr\.?\s+([A-Za-z]+)", biz_name, re.I)
-                        owner_name = f"Dr. {m.group(1)}" if m else "Dr. Meera"
-                    else:
-                        owner_name = "Dr. Meera"
-                else:
-                    owner_name = owner_first or (biz_name.split()[0] if biz_name else "there")
-            elif merchant_id and "drmeera" in merchant_id:
-                owner_name = "Dr. Meera"
-
-            topic_fact = "the latest research and recommendations"
-            if prior_outbound_body:
-                p_lower = prior_outbound_body.lower()
-                if "jida" in p_lower or "fluoride" in p_lower:
-                    topic_fact = "the JIDA fluoride recall research"
-                elif "radiograph" in p_lower or "dci" in p_lower or "radiation" in p_lower:
-                    topic_fact = "the DCI radiograph dose compliance update"
-                elif "ida" in p_lower or "webinar" in p_lower or "cde" in p_lower:
-                    topic_fact = "the IDA digital impressions update"
-                elif "bridal" in p_lower or "wedding" in p_lower:
-                    topic_fact = "the bridal prep schedule"
-                elif "views" in p_lower or "calls" in p_lower:
-                    topic_fact = "the clinic profile performance metrics"
-                elif "cleaning" in p_lower or "recall" in p_lower:
-                    topic_fact = "the patient recall schedule"
-
-            if topic_fact == "the latest research and recommendations" and trigger:
-                kind = trigger.get("kind", "")
-                payload = trigger.get("payload", {})
-                top_item = payload.get("top_item_id", "")
-                if "fluoride" in top_item or kind == "research_digest":
-                    topic_fact = "the JIDA fluoride recall research"
-                elif "radiograph" in top_item or kind in ("regulation_change", "compliance"):
-                    topic_fact = "the DCI radiograph dose compliance update"
-                elif kind in ("perf_dip", "winback_eligible"):
-                    topic_fact = "the profile performance metrics"
-                elif kind in ("bridal_followup", "wedding_package_followup"):
-                    topic_fact = "the bridal package schedule"
-                elif kind == "recall_due":
-                    topic_fact = "the patient recall schedule"
-
-            if topic_fact == "the latest research and recommendations":
-                cat = merchant.get("category_slug", "") if merchant else ""
-                if cat == "dentists" or (merchant_id and "dentist" in merchant_id):
-                    topic_fact = "the JIDA fluoride recall research"
-                elif cat == "salons" or (merchant_id and "salon" in merchant_id):
-                    topic_fact = "the bridal styling and package schedule"
-                elif cat == "restaurants" or (merchant_id and "restaurant" in merchant_id):
-                    topic_fact = "the weekend dining promotional offer"
-                elif cat == "gyms" or (merchant_id and "gym" in merchant_id):
-                    topic_fact = "the fitness membership renewal update"
-                elif cat == "pharmacies" or (merchant_id and "pharmacy" in merchant_id):
-                    topic_fact = "the prescription refill schedule"
-
             return {
                 "action": "send",
-                "body": f"{owner_name}, just checking if you had a moment to look at {topic_fact} I shared?",
+                "body": "Hi there! Just following up on my previous message to see if you had any thoughts. Let me know when you have a moment.",
                 "cta": "open_ended",
-                "rationale": f"First auto-reply detected. Following up specifically with {owner_name} regarding {topic_fact}.",
+                "rationale": "First detected auto-reply. Sending one gentle follow-up before waiting.",
             }
         elif count == 2:
             return {
@@ -443,25 +364,6 @@ class GuardLayer:
                     tokens.add(clean_num.replace(",", ""))
                     tokens.add(clean_num.replace("%", ""))
 
-        # Date and deadline urgency extraction (Rule 13)
-        # Extract ISO dates (YYYY-MM-DD) and calculate day differences between any pairs
-        date_strs = re.findall(r"\b(202\d-\d{2}-\d{2})\b", raw_context_str)
-        if date_strs:
-            parsed_dates = []
-            for ds in set(date_strs):
-                try:
-                    dt = datetime.strptime(ds, "%Y-%m-%d").date()
-                    parsed_dates.append(dt)
-                    tokens.add(str(dt.day))
-                except Exception:
-                    pass
-            for i in range(len(parsed_dates)):
-                for j in range(len(parsed_dates)):
-                    if i != j:
-                        diff = abs((parsed_dates[i] - parsed_dates[j]).days)
-                        if 0 < diff <= 365:
-                            tokens.add(str(diff))
-
         extract_vals(full_context_obj)
 
         return tokens, raw_context_str
@@ -517,50 +419,6 @@ class GuardLayer:
         is_grounded = len(ungrounded) == 0
         return is_grounded, ungrounded
 
-    def check_customer_automation_reveals(
-        self, body: str, send_as: Optional[str] = "vera"
-    ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Rule 14: Customer-facing messages (send_as="merchant_on_behalf") must never
-        use singular first-person pronouns ("me", "I", "my", "I'll", "I can", "let me")
-        or robotic phrasing like "our system" that reveals automation.
-        """
-        if send_as != "merchant_on_behalf":
-            return True, body, None
-
-        # Scan for automation reveals: "me", "I can", "let me", "I'll", "I will", "my", "our system"
-        reveal_pattern = re.compile(
-            r"\b(would you like me to|want me to|shall i|let me\b|i can\b|i'll\b|ill\b|i will\b|\bi\b|my\b|\bme\b|our system\b)",
-            re.IGNORECASE,
-        )
-        match = reveal_pattern.search(body)
-        if match:
-            violation_token = match.group(0)
-            sanitized = self.sanitize_customer_automation_reveals(body)
-            return False, sanitized, f"customer_automation_reveal: '{violation_token}' reveals bot automation in customer message"
-        return True, body, None
-
-    def sanitize_customer_automation_reveals(self, body: str) -> str:
-        replacements = [
-            (r"\bwould you like me to\b", "would you like us to"),
-            (r"\bwant me to\b", "shall we"),
-            (r"\blet me know\b", "let us know"),
-            (r"\blet me\b", "let us"),
-            (r"\bi can\b", "we can"),
-            (r"\bi'll\b", "we'll"),
-            (r"\bi will\b", "we will"),
-            (r"\bcontact me\b", "contact us"),
-            (r"\bmessage me\b", "message us"),
-            (r"\btell me\b", "tell us"),
-            (r"\bour system\b", "our clinic"),
-            (r"\bme\b", "us"),
-            (r"\bmy\b", "our"),
-        ]
-        sanitized = body
-        for pat, repl in replacements:
-            sanitized = re.sub(pat, repl, sanitized, flags=re.IGNORECASE)
-        return sanitized
-
     def post_guard_composed_message(
         self,
         composed_body: str,
@@ -569,15 +427,13 @@ class GuardLayer:
         trigger: Dict[str, Any],
         customer: Optional[Dict[str, Any]] = None,
         prior_bodies: Optional[List[str]] = None,
-        send_as: Optional[str] = "vera",
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Runs ALL post guards:
         1. URL check -> strips URLs
         2. Anti-repetition check -> flags duplicate bodies
         3. Single-CTA check -> eliminates multiple questions
-        4. Customer automation reveals check -> flags first-person reveals (Rule 14)
-        5. Grounding check -> flags any fabricated numbers
+        4. Grounding check -> flags any fabricated numbers
 
         Returns:
             (passed: bool, sanitized_body: str, violation_reason: Optional[str])
@@ -596,12 +452,7 @@ class GuardLayer:
         if not single_cta:
             logger.warning("Post-guard: Multiple CTAs collapsed to single CTA.")
 
-        # 4. Customer automation reveal check (Rule 14)
-        no_reveal, sanitized_body, reveal_violation = self.check_customer_automation_reveals(sanitized_body, send_as)
-        if not no_reveal:
-            return False, sanitized_body, reveal_violation
-
-        # 5. Grounding Check (Highest Priority)
+        # 4. Grounding Check (Highest Priority)
         is_grounded, ungrounded_numbers = self.check_grounding(
             sanitized_body, category, merchant, trigger, customer
         )

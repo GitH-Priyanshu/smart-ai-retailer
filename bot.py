@@ -164,28 +164,12 @@ async def tick(req: TickRequest):
 async def reply(req: ReplyRequest):
     conv_state = conversation_store.get_or_create(req.conversation_id, req.merchant_id, req.customer_id)
 
-    # Collect prior inbound and outbound messages
+    # Collect prior inbound messages for repeating / auto-reply checks
     prior_inbounds = [
         t["message"]
         for t in conv_state.get("turns", [])
         if t.get("role") in ("merchant", "customer")
     ]
-    prior_outbounds = [
-        t["message"]
-        for t in conv_state.get("turns", [])
-        if t.get("role") in ("vera", "merchant_on_behalf")
-    ]
-    prior_outbound_body = prior_outbounds[0] if prior_outbounds else None
-
-    merchant = context_store.get("merchant", req.merchant_id) if req.merchant_id else None
-    customer = context_store.get("customer", req.customer_id) if req.customer_id else None
-
-    trigger_id = None
-    for t in conv_state.get("turns", []):
-        if t.get("extra", {}).get("trigger_id"):
-            trigger_id = t["extra"]["trigger_id"]
-            break
-    trigger = context_store.get("trigger", trigger_id) if trigger_id else None
 
     # Run PRE checks (Hostile, Auto-reply, Intent transition)
     intercepted, new_mode = guard_layer.check_pre_reply(
@@ -193,9 +177,6 @@ async def reply(req: ReplyRequest):
         merchant_id=req.merchant_id,
         message=req.message,
         prior_inbounds=prior_inbounds,
-        merchant=merchant,
-        trigger=trigger,
-        prior_outbound_body=prior_outbound_body,
     )
 
     # Log incoming message
