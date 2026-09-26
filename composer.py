@@ -319,6 +319,7 @@ class Composer:
         conversation_history: List[Dict[str, Any]],
         inbound_message: str,
         conversation_mode: str = "qualifying",
+        prior_outbound_body: Optional[str] = None,
     ) -> ReplyDecision:
         """
         Composes a synchronous reply to merchant/customer message.
@@ -326,6 +327,11 @@ class Composer:
         if self.client:
             try:
                 from google.genai import types
+
+                # Check if merchant's message is a follow-up question
+                is_followup = any(w in inbound_message.lower() for w in [
+                    "explain", "tell me more", "how", "what does", "more about this", "details", "elaborate"
+                ])
 
                 prompt_data = {
                     "mode": conversation_mode,
@@ -335,6 +341,8 @@ class Composer:
                     "trigger": trigger,
                     "customer": customer,
                 }
+                if prior_outbound_body:
+                    prompt_data["prior_outbound_message"] = prior_outbound_body
 
                 if conversation_mode == "action":
                     user_content = (
@@ -342,11 +350,21 @@ class Composer:
                         f"CRITICAL: Mode is 'action'. You MUST return action='send'. "
                         f"Provide the concrete next step using words like 'done', 'sending', 'draft', 'here', 'confirm', 'proceed', 'next'. "
                         f"NEVER ask any qualifying questions (do NOT use 'would you', 'do you', 'can you tell', 'what if', 'how about').\n\n"
-                        f"Context & conversation history:\n```json\n{json.dumps(prompt_data, indent=2)}\n```"
                     )
+                    if prior_outbound_body:
+                        user_content += f"Prior message you sent: {prior_outbound_body}\n\n"
+                    user_content += f"Context & conversation history:\n```json\n{json.dumps(prompt_data, indent=2)}\n```"
                 else:
-                    user_content = (
-                        f"Merchant/customer replied: \"{inbound_message}\"\n\n"
+                    user_content = f"Merchant/customer replied: \"{inbound_message}\"\n\n"
+                    if prior_outbound_body:
+                        user_content += f"Prior message you sent: {prior_outbound_body}\n\n"
+                    if is_followup and prior_outbound_body:
+                        user_content += (
+                            f"CRITICAL INSTRUCTION: The merchant is asking a follow-up question about the prior message you sent ('{prior_outbound_body}'). "
+                            f"You MUST answer their question directly by explaining the topic, clinical evidence, or compliance details mentioned in your prior message. "
+                            f"Do NOT switch topics or introduce unrelated services (like whitening or aligners) unless they were explicitly mentioned in your prior message.\n\n"
+                        )
+                    user_content += (
                         f"Context & conversation history:\n"
                         f"```json\n{json.dumps(prompt_data, indent=2)}\n```\n\n"
                         f"Decide whether to 'send', 'wait', or 'end'."

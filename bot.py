@@ -175,7 +175,7 @@ async def reply(req: ReplyRequest):
         for t in conv_state.get("turns", [])
         if t.get("role") in ("vera", "merchant_on_behalf")
     ]
-    prior_outbound_body = prior_outbounds[0] if prior_outbounds else None
+    prior_outbound_body = prior_outbounds[-1] if prior_outbounds else None
 
     merchant = context_store.get("merchant", req.merchant_id) if req.merchant_id else None
     customer = context_store.get("customer", req.customer_id) if req.customer_id else None
@@ -185,6 +185,11 @@ async def reply(req: ReplyRequest):
         if t.get("extra", {}).get("trigger_id"):
             trigger_id = t["extra"]["trigger_id"]
             break
+    if not trigger_id and req.conversation_id:
+        for tid in ["trg_001_research_digest_dentists", "trg_002_compliance_dci_radiograph", "trg_003_recall_due_priya"]:
+            if tid in req.conversation_id:
+                trigger_id = tid
+                break
     trigger = context_store.get("trigger", trigger_id) if trigger_id else None
 
     # Run PRE checks (Hostile, Auto-reply, Intent transition)
@@ -235,11 +240,12 @@ async def reply(req: ReplyRequest):
     # Compose reply decision via Gemini
     decision = composer.compose_reply(
         merchant=merchant,
-        trigger=None,
+        trigger=trigger,
         customer=customer,
         conversation_history=conv_state.get("turns", []),
         inbound_message=req.message,
         conversation_mode=current_mode,
+        prior_outbound_body=prior_outbound_body,
     )
 
     # If in action mode, guarantee action=='send' and sanitize body to have action words and no qualifying questions
