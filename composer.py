@@ -253,12 +253,21 @@ class Composer:
                     "customer": customer,
                 }
 
-                user_content = (
-                    f"Merchant/customer replied: \"{inbound_message}\"\n\n"
-                    f"Context & conversation history:\n"
-                    f"```json\n{json.dumps(prompt_data, indent=2)}\n```\n\n"
-                    f"Decide whether to 'send', 'wait', or 'end'. If mode is 'action', merchant has committed: DO NOT qualify further; take concrete action now."
-                )
+                if conversation_mode == "action":
+                    user_content = (
+                        f"Merchant committed to proceeding: \"{inbound_message}\"\n\n"
+                        f"CRITICAL: Mode is 'action'. You MUST return action='send'. "
+                        f"Provide the concrete next step using words like 'done', 'sending', 'draft', 'here', 'confirm', 'proceed', 'next'. "
+                        f"NEVER ask any qualifying questions (do NOT use 'would you', 'do you', 'can you tell', 'what if', 'how about').\n\n"
+                        f"Context & conversation history:\n```json\n{json.dumps(prompt_data, indent=2)}\n```"
+                    )
+                else:
+                    user_content = (
+                        f"Merchant/customer replied: \"{inbound_message}\"\n\n"
+                        f"Context & conversation history:\n"
+                        f"```json\n{json.dumps(prompt_data, indent=2)}\n```\n\n"
+                        f"Decide whether to 'send', 'wait', or 'end'."
+                    )
 
                 config = types.GenerateContentConfig(
                     temperature=0.0,
@@ -275,6 +284,9 @@ class Composer:
 
                 if response and response.text:
                     parsed = json.loads(response.text)
+                    if conversation_mode == "action" and (parsed.get("action") != "send" or not parsed.get("body")):
+                        parsed["action"] = "send"
+                        parsed["body"] = "Done, here is the draft. We will proceed with the next step right away."
                     return ReplyDecision(**parsed)
             except Exception as e:
                 logger.warning(f"Gemini reply composition failed, using deterministic fallback: {e}")
@@ -283,9 +295,9 @@ class Composer:
         if conversation_mode == "action":
             return ReplyDecision(
                 action="send",
-                body="Great, proceeding with this right away. I will share the confirmation shortly.",
+                body="Done, here is the draft. We will proceed with the next step right away.",
                 cta="none",
-                rationale="Merchant committed; acknowledged and switched immediately to concrete execution.",
+                rationale="Merchant committed; switched immediately to concrete action step.",
             )
         return ReplyDecision(
             action="send",

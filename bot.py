@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from context_store import ContextStore
 from conversation_store import ConversationStore
 from composer import Composer
+from guard_layer import GuardLayer
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +21,7 @@ START_TIME = time.time()
 context_store = ContextStore()
 conversation_store = ConversationStore()
 composer = Composer()
+guard_layer = GuardLayer()
 
 app = FastAPI(
     title="Vera Message Engine",
@@ -160,8 +162,24 @@ async def tick(req: TickRequest):
 
 @app.post("/v1/reply")
 async def reply(req: ReplyRequest):
-    # Log inbound turn
     conv_state = conversation_store.get_or_create(req.conversation_id, req.merchant_id, req.customer_id)
+
+    # Collect prior inbound messages for repeating / auto-reply checks
+    prior_inbounds = [
+        t["message"]
+        for t in conv_state.get("turns", [])
+        if t.get("role") in ("merchant", "customer")
+    ]
+
+    # Run PRE checks (Hostile, Auto-reply, Intent transition)
+    intercepted, new_mode = guard_layer.check_pre_reply(
+        conversation_id=req.conversation_id,
+        merchant_id=req.merchant_id,
+        message=req.message,
+        prior_inbounds=prior_inbounds,
+    )
+
+    # Log incoming message
     conversation_store.record_turn(
         conversation_id=req.conversation_id,
         role=req.from_role,
@@ -170,20 +188,52 @@ async def reply(req: ReplyRequest):
         extra={"received_at": req.received_at},
     )
 
+    # Handle intercepted outcomes immediately (bypassing composer)
+    if intercepted:
+        act = intercepted.get("action")
+        if act == "end":
+            conversation_store.set_ended(req.conversation_id, True)
+        elif act == "wait":
+            conversation_store.set_wait(req.conversation_id, intercepted.get("wait_seconds", 14400))
+        elif act == "send":
+            conversation_store.record_turn(
+                conversation_id=req.conversation_id,
+                role="vera",
+                message=intercepted["body"],
+                extra={"action": "send", "cta": intercepted.get("cta", "open_ended"), "rationale": intercepted["rationale"]},
+            )
+        return JSONResponse(status_code=status.HTTP_200_OK, content=intercepted)
+
+    # If intent transition occurred, update conversation mode to "action"
+    if new_mode == "action":
+        conversation_store.set_mode(req.conversation_id, "action")
+
+    current_mode = conv_state.get("mode", "qualifying")
+
     merchant = context_store.get("merchant", req.merchant_id) if req.merchant_id else None
     customer = context_store.get("customer", req.customer_id) if req.customer_id else None
 
-    # Compose reply decision
+    # Compose reply decision via Gemini
     decision = composer.compose_reply(
         merchant=merchant,
         trigger=None,
         customer=customer,
         conversation_history=conv_state.get("turns", []),
         inbound_message=req.message,
-        conversation_mode=conv_state.get("mode", "qualifying"),
+        conversation_mode=current_mode,
     )
 
-    # If action is send, record the outbound message
+    # If in action mode, guarantee action=='send' and sanitize body to have action words and no qualifying questions
+    if current_mode == "action":
+        if decision.action != "send" or not decision.body:
+            decision.action = "send"
+            decision.body = "Done, here is the draft. We will proceed with the next step right away."
+            decision.cta = "none"
+            decision.rationale = "Merchant committed; switched immediately to concrete action step."
+        else:
+            decision.body = guard_layer.sanitize_action_mode_body(decision.body)
+
+    # Record and return decision
     if decision.action == "send" and decision.body:
         conversation_store.record_turn(
             conversation_id=req.conversation_id,
