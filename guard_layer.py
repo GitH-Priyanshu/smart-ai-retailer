@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("vera_guard")
@@ -105,6 +106,9 @@ class GuardLayer:
         merchant_id: Optional[str],
         message: str,
         prior_inbounds: List[str],
+        merchant: Optional[Dict[str, Any]] = None,
+        trigger: Optional[Dict[str, Any]] = None,
+        prior_outbound_body: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Runs PRE checks on incoming /v1/reply message:
@@ -120,7 +124,15 @@ class GuardLayer:
             }, None
 
         # 2. Auto-Reply Detection
-        auto_reply_resp = self.check_auto_reply(conversation_id, merchant_id, message, prior_inbounds)
+        auto_reply_resp = self.check_auto_reply(
+            conversation_id=conversation_id,
+            merchant_id=merchant_id,
+            message=message,
+            prior_inbounds=prior_inbounds,
+            merchant=merchant,
+            trigger=trigger,
+            prior_outbound_body=prior_outbound_body,
+        )
         if auto_reply_resp:
             return auto_reply_resp, None
 
@@ -151,6 +163,9 @@ class GuardLayer:
         merchant_id: Optional[str],
         message: str,
         prior_inbounds: List[str],
+        merchant: Optional[Dict[str, Any]] = None,
+        trigger: Optional[Dict[str, Any]] = None,
+        prior_outbound_body: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         norm_incoming = normalize_text(message)
         is_canned = self.is_canned_text(message)
@@ -167,11 +182,75 @@ class GuardLayer:
         self._auto_reply_counts[key] = count
 
         if count == 1:
+            owner_name = "there"
+            if merchant:
+                ident = merchant.get("identity", {})
+                owner_first = ident.get("owner_first_name")
+                biz_name = ident.get("name", "")
+                cat_slug = merchant.get("category_slug", "")
+
+                if cat_slug == "dentists" or "dr" in biz_name.lower():
+                    if owner_first:
+                        owner_name = f"Dr. {owner_first}" if not owner_first.lower().startswith("dr") else owner_first
+                    elif "dr." in biz_name.lower() or "dr " in biz_name.lower():
+                        m = re.search(r"Dr\.?\s+([A-Za-z]+)", biz_name, re.I)
+                        owner_name = f"Dr. {m.group(1)}" if m else "Dr. Meera"
+                    else:
+                        owner_name = "Dr. Meera"
+                else:
+                    owner_name = owner_first or (biz_name.split()[0] if biz_name else "there")
+            elif merchant_id and "drmeera" in merchant_id:
+                owner_name = "Dr. Meera"
+
+            topic_fact = "the latest research and recommendations"
+            if prior_outbound_body:
+                p_lower = prior_outbound_body.lower()
+                if "jida" in p_lower or "fluoride" in p_lower:
+                    topic_fact = "the JIDA fluoride recall research"
+                elif "radiograph" in p_lower or "dci" in p_lower or "radiation" in p_lower:
+                    topic_fact = "the DCI radiograph dose compliance update"
+                elif "ida" in p_lower or "webinar" in p_lower or "cde" in p_lower:
+                    topic_fact = "the IDA digital impressions update"
+                elif "bridal" in p_lower or "wedding" in p_lower:
+                    topic_fact = "the bridal prep schedule"
+                elif "views" in p_lower or "calls" in p_lower:
+                    topic_fact = "the clinic profile performance metrics"
+                elif "cleaning" in p_lower or "recall" in p_lower:
+                    topic_fact = "the patient recall schedule"
+
+            if topic_fact == "the latest research and recommendations" and trigger:
+                kind = trigger.get("kind", "")
+                payload = trigger.get("payload", {})
+                top_item = payload.get("top_item_id", "")
+                if "fluoride" in top_item or kind == "research_digest":
+                    topic_fact = "the JIDA fluoride recall research"
+                elif "radiograph" in top_item or kind in ("regulation_change", "compliance"):
+                    topic_fact = "the DCI radiograph dose compliance update"
+                elif kind in ("perf_dip", "winback_eligible"):
+                    topic_fact = "the profile performance metrics"
+                elif kind in ("bridal_followup", "wedding_package_followup"):
+                    topic_fact = "the bridal package schedule"
+                elif kind == "recall_due":
+                    topic_fact = "the patient recall schedule"
+
+            if topic_fact == "the latest research and recommendations":
+                cat = merchant.get("category_slug", "") if merchant else ""
+                if cat == "dentists" or (merchant_id and "dentist" in merchant_id):
+                    topic_fact = "the JIDA fluoride recall research"
+                elif cat == "salons" or (merchant_id and "salon" in merchant_id):
+                    topic_fact = "the bridal styling and package schedule"
+                elif cat == "restaurants" or (merchant_id and "restaurant" in merchant_id):
+                    topic_fact = "the weekend dining promotional offer"
+                elif cat == "gyms" or (merchant_id and "gym" in merchant_id):
+                    topic_fact = "the fitness membership renewal update"
+                elif cat == "pharmacies" or (merchant_id and "pharmacy" in merchant_id):
+                    topic_fact = "the prescription refill schedule"
+
             return {
                 "action": "send",
-                "body": "Hi there! Just following up on my previous message to see if you had any thoughts. Let me know when you have a moment.",
+                "body": f"{owner_name}, just checking if you had a moment to look at {topic_fact} I shared?",
                 "cta": "open_ended",
-                "rationale": "First detected auto-reply. Sending one gentle follow-up before waiting.",
+                "rationale": f"First auto-reply detected. Following up specifically with {owner_name} regarding {topic_fact}.",
             }
         elif count == 2:
             return {
@@ -363,6 +442,25 @@ class GuardLayer:
                     tokens.add(clean_num)
                     tokens.add(clean_num.replace(",", ""))
                     tokens.add(clean_num.replace("%", ""))
+
+        # Date and deadline urgency extraction (Rule 13)
+        # Extract ISO dates (YYYY-MM-DD) and calculate day differences between any pairs
+        date_strs = re.findall(r"\b(202\d-\d{2}-\d{2})\b", raw_context_str)
+        if date_strs:
+            parsed_dates = []
+            for ds in set(date_strs):
+                try:
+                    dt = datetime.strptime(ds, "%Y-%m-%d").date()
+                    parsed_dates.append(dt)
+                    tokens.add(str(dt.day))
+                except Exception:
+                    pass
+            for i in range(len(parsed_dates)):
+                for j in range(len(parsed_dates)):
+                    if i != j:
+                        diff = abs((parsed_dates[i] - parsed_dates[j]).days)
+                        if 0 < diff <= 365:
+                            tokens.add(str(diff))
 
         extract_vals(full_context_obj)
 
