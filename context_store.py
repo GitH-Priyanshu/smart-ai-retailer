@@ -52,7 +52,46 @@ class ContextStore:
 
     def get(self, scope: str, context_id: str) -> Optional[Dict[str, Any]]:
         entry = self._store.get((scope, context_id))
-        return entry["payload"] if entry else None
+        if entry:
+            return entry["payload"]
+        return self._lookup_dataset_seed(scope, context_id)
+
+    def _lookup_dataset_seed(self, scope: str, context_id: str) -> Optional[Dict[str, Any]]:
+        import json
+        from pathlib import Path
+        dataset_dir = Path(__file__).parent / "dataset"
+        if not dataset_dir.exists():
+            return None
+
+        try:
+            if scope == "customer":
+                seed_file = dataset_dir / "customers_seed.json"
+                if seed_file.exists():
+                    data = json.load(open(seed_file))
+                    for c in data.get("customers", []):
+                        if c.get("customer_id") == context_id:
+                            return c
+            elif scope == "merchant":
+                seed_file = dataset_dir / "merchants_seed.json"
+                if seed_file.exists():
+                    data = json.load(open(seed_file))
+                    for m in data.get("merchants", []):
+                        if m.get("merchant_id") == context_id:
+                            return m
+            elif scope == "category":
+                cat_file = dataset_dir / "categories" / f"{context_id}.json"
+                if cat_file.exists():
+                    return json.load(open(cat_file))
+            elif scope == "trigger":
+                seed_file = dataset_dir / "triggers_seed.json"
+                if seed_file.exists():
+                    data = json.load(open(seed_file))
+                    for t in data.get("triggers", []):
+                        if t.get("id") == context_id:
+                            return t
+        except Exception:
+            pass
+        return None
 
     def get_version(self, scope: str, context_id: str) -> Optional[int]:
         entry = self._store.get((scope, context_id))
