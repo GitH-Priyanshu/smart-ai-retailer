@@ -134,6 +134,8 @@ class Composer:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         self.client = None
+        from guard_layer import GuardLayer
+        self.guard_layer = GuardLayer()
 
         if self.api_key:
             try:
@@ -154,9 +156,15 @@ class Composer:
     ) -> ComposedMessage:
         """
         Main composition function. Attempts Gemini generation with structured output.
-        Fails over to deterministic template fallback if any error/timeout occurs.
+        Enforces POST guards: URL strip, single-CTA, anti-repetition, and Grounding check.
+        Fails over to deterministic template fallback if any violation or error occurs.
         """
-        # If Gemini client is available, attempt LLM call
+        prior_bodies = [
+            t["message"]
+            for t in (conversation_history or [])
+            if t.get("role") in ("vera", "merchant_on_behalf")
+        ]
+
         if self.client:
             try:
                 result = self._call_gemini_compose(
@@ -169,12 +177,61 @@ class Composer:
                     structural_instruction=structural_instruction,
                 )
                 if result:
-                    return result
+                    passed, sanitized_body, violation = self.guard_layer.post_guard_composed_message(
+                        composed_body=result.body,
+                        category=category,
+                        merchant=merchant,
+                        trigger=trigger,
+                        customer=customer,
+                        prior_bodies=prior_bodies,
+                    )
+                    if passed:
+                        result.body = sanitized_body
+                        return result
+                    else:
+                        logger.warning(f"Post-guard caught violation ({violation}). Attempting corrective retry...")
+                        corrective_instruction = (
+                            f"GROUNDING VIOLATION IN PREVIOUS ATTEMPT: {violation}. "
+                            f"You must NEVER invent numbers or citations. Only cite facts present in the context JSON."
+                        )
+                        retry_result = self._call_gemini_compose(
+                            category=category,
+                            merchant=merchant,
+                            trigger=trigger,
+                            customer=customer,
+                            conversation_history=conversation_history,
+                            conversation_mode=conversation_mode,
+                            structural_instruction=corrective_instruction,
+                        )
+                        if retry_result:
+                            retry_passed, retry_sanitized, _ = self.guard_layer.post_guard_composed_message(
+                                composed_body=retry_result.body,
+                                category=category,
+                                merchant=merchant,
+                                trigger=trigger,
+                                customer=customer,
+                                prior_bodies=prior_bodies,
+                            )
+                            if retry_passed:
+                                retry_result.body = retry_sanitized
+                                return retry_result
+                            else:
+                                logger.warning(f"Retry still violated post-guard. Falling back to deterministic.")
             except Exception as e:
                 logger.warning(f"Gemini composition failed, falling back to deterministic: {e}")
 
-        # Deterministic fallback
-        return self._deterministic_fallback(category, merchant, trigger, customer)
+        # Deterministic fallback guaranteed to use verified facts
+        fallback_msg = self._deterministic_fallback(category, merchant, trigger, customer)
+        _, sanitized_fallback, _ = self.guard_layer.post_guard_composed_message(
+            composed_body=fallback_msg.body,
+            category=category,
+            merchant=merchant,
+            trigger=trigger,
+            customer=customer,
+            prior_bodies=prior_bodies,
+        )
+        fallback_msg.body = sanitized_fallback
+        return fallback_msg
 
     def _call_gemini_compose(
         self,
@@ -287,6 +344,10 @@ class Composer:
                     if conversation_mode == "action" and (parsed.get("action") != "send" or not parsed.get("body")):
                         parsed["action"] = "send"
                         parsed["body"] = "Done, here is the draft. We will proceed with the next step right away."
+                    if parsed.get("body"):
+                        _, clean_b = self.guard_layer.check_urls(parsed["body"])
+                        _, clean_b = self.guard_layer.check_single_cta(clean_b)
+                        parsed["body"] = clean_b
                     return ReplyDecision(**parsed)
             except Exception as e:
                 logger.warning(f"Gemini reply composition failed, using deterministic fallback: {e}")
