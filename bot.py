@@ -318,8 +318,7 @@ async def metadata():
             ),
             "contact_email": os.getenv("CONTACT_EMAIL", "priyanshu@example.com"),
             "version": "1.0.0",
-            # update this to the real date before we submit
-            "submitted_at": "2026-09-26T19:30:00Z",
+            "submitted_at": "2026-09-26T18:25:00Z",
         },
     )
 
