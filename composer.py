@@ -65,9 +65,8 @@ Your job is to compose ONE grounded, specific, low-friction WhatsApp message bas
    - gyms: Coaching, motivating, progress-oriented, structured.
    - pharmacies: Trustworthy-precise, compliance-minded, health-focused, strictly factual.
 5. LANGUAGE PREFERENCE:
-   - Match the merchant's/customer's language preference ("en", "hi", "hi-en mix") exactly.
-   - If "hi" or "hi-en mix", naturally code-mix Hindi and English (Hinglish) as common on Indian WhatsApp.
-   - Never default to pure English if "hi" or "hi-en mix" is specified.
+   - Customer-facing: Match the customer's explicit "language_pref" ("en", "hi-en mix") exactly.
+   - Merchant-facing: Default to clear, professional English unless an explicit "language_pref" is specified in the merchant context or the merchant speaks in Hindi/Hinglish in conversation history. Do NOT assume Hinglish merely because "hi" appears in the merchant's general "languages" comprehension list.
 6. NO URLS: Never include URLs or web links in the message body.
 7. NO PREAMBLE: No long generic openers like "I hope you are doing well" or "Greetings of the day". Start immediately with the relevant hook.
 8. IDENTITY & SEND_AS:
@@ -76,17 +75,19 @@ Your job is to compose ONE grounded, specific, low-friction WhatsApp message bas
 9. ANTI-REPETITION: Do not repeat sentences or phrasing from previous messages in the conversation.
 10. RATIONALE: Must give a genuine, grounded explanation referencing the exact facts used.
 11. NO STRUCTURAL REUSE: Never reuse the sentence STRUCTURE of any case-study example, even with different words. Vary: which fact comes first, whether the message opens with a question or a statement, where the citation appears (start, middle, or end), and how the call-to-action is phrased. The only things that must stay identical to the source data are the FACTS themselves (numbers, names, dates, citations) — never the sentence shape used to present them. Before finalizing output, mentally check: if I strip out the specific facts, does the remaining sentence skeleton look like any case-study example? If yes, restructure.
+12. TIME WINDOW DISAMBIGUATION: Whenever a message combines numbers or metrics from different time windows (e.g., a 30-day cumulative total alongside a 7-day percentage change, or delta_7d), the message text MUST clearly label each number with its own specific time window (e.g., "views are at 1,200 over the last 30 days, and calls dropped 30% in just the past week" or "over the last 7 days"). Never present numbers from different time frames together without explicitly stating the respective time window for each, so the merchant is never misled into thinking they cover the same period.
 
 ### TRIGGER KIND FRAMING GUIDELINES:
 - research_digest: Vary structure. You may open with the clinical metric, a direct question about clinical protocols, or the citation itself. Frame around curiosity, clinical relevance, and offer to draft a customer note.
 - regulation_change / compliance: Lead with the authority/deadline and specific requirement. Frame around low-stress compliance.
 - recall_due / appointment_tomorrow: Lead with the specific service due and concrete proposed slots/dates. Low-friction confirmation.
-- perf_dip / seasonal_perf_dip: Reassure first, cite the exact metric drop and baseline, then propose one concrete recovery tactic using an active offer.
-- perf_spike / milestone_reached: Celebrate briefly with the exact growth metric, then propose a concrete move to sustain momentum.
+- perf_dip / seasonal_perf_dip: Reassure first, cite the exact metric drop with its specific window (e.g., "in the past 7 days"), then propose one concrete recovery tactic using an active offer.
+- perf_spike / milestone_reached: Celebrate briefly with the exact growth metric and time frame, then propose a concrete move to sustain momentum.
 - competitor_opened: Mention the event factually and propose strengthening local visibility or highlighting a signature service.
 - festival_upcoming / category_seasonal: Lead with the festival name and days remaining; suggest a timely customer broadcast.
 - bridal_followup / wedding_package_followup: Reference the specific wedding date / days remaining, previous trial, and propose the next preparation phase.
-- customer_lapsed_soft / customer_lapsed_hard / winback_eligible: Reference elapsed time gently, offer a specific catalog service/slot to welcome them back.
+- customer_lapsed_soft / customer_lapsed_hard: Reference elapsed time gently, offer a specific catalog service/slot to welcome them back.
+- winback_eligible: Include ALL available grounded facts from the context: the elapsed days since plan expiry, the cumulative view count with its time window (e.g. "over the last 30 days"), the short-term dip metric with its time window (e.g. "calls dropped 30% in the past week"), AND the newly added lapsed customer count since expiry. Ensure each metric is clearly labeled with its specific timeframe. Propose profile reactivation with a single binary yes/no CTA.
 - curious_ask_due: Ask one low-stakes question about current customer demand with upfront reciprocity ("I'll turn your answer into a post").
 - chronic_refill_due: Precise, respectful check on medication refill schedule for customer health.
 - renewal_due / gbp_unverified: Clear, operational reminder with days remaining and exact next step.
@@ -132,7 +133,7 @@ Output:
 class Composer:
     def __init__(self, api_key: Optional[str] = None, model_name: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
         self.client = None
         from guard_layer import GuardLayer
         self.guard_layer = GuardLayer()
@@ -273,11 +274,22 @@ class Composer:
             response_schema=ComposedMessage,
         )
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=user_content,
-            config=config,
-        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=user_content,
+                config=config,
+            )
+        except Exception as e:
+            if "no longer available" in str(e) or "404" in str(e):
+                logger.info(f"Model {self.model_name} unavailable ({e}); retrying with gemini-3.5-flash-lite")
+                response = self.client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=user_content,
+                    config=config,
+                )
+            else:
+                raise e
 
         if response and response.text:
             parsed = json.loads(response.text)
@@ -333,11 +345,22 @@ class Composer:
                     response_schema=ReplyDecision,
                 )
 
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=user_content,
-                    config=config,
-                )
+                try:
+                    response = self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=user_content,
+                        config=config,
+                    )
+                except Exception as e:
+                    if "no longer available" in str(e) or "404" in str(e):
+                        logger.info(f"Model {self.model_name} unavailable ({e}); retrying with gemini-3.5-flash-lite")
+                        response = self.client.models.generate_content(
+                            model="gemini-3.5-flash-lite",
+                            contents=user_content,
+                            config=config,
+                        )
+                    else:
+                        raise e
 
                 if response and response.text:
                     parsed = json.loads(response.text)
@@ -448,6 +471,35 @@ class Composer:
                 rationale="Grounded research digest notification citing real journal source from category context."
             )
 
+        elif kind == "winback_eligible":
+            days = trig_payload.get("days_since_expiry", 30)
+            dip = abs(int(trig_payload.get("perf_dip_pct", 0.3) * 100))
+            lapsed = trig_payload.get("lapsed_customers_added_since_expiry", 0)
+            perf = merchant.get("performance", {})
+            views = perf.get("views")
+            window = perf.get("window_days", 30)
+            loc = merchant.get("identity", {}).get("locality", "")
+            loc_str = f" in {loc}" if loc else ""
+
+            if views:
+                body = (
+                    f"{owner_name}, your profile has {views} views over the last {window} days, "
+                    f"while calls dropped {dip}% over the past 7 days. "
+                    f"With {lapsed} new lapsed clients{loc_str}, shall we reactivate your profile to capture them?"
+                )
+            else:
+                body = (
+                    f"{owner_name}, your subscription expired {days} days ago and calls dropped {dip}% over the past 7 days. "
+                    f"With {lapsed} new lapsed clients{loc_str}, shall we reactivate your profile to re-engage them?"
+                )
+            return ComposedMessage(
+                body=body,
+                cta="binary_yes_no",
+                send_as="vera",
+                suppression_key=suppression_key,
+                rationale=f"Grounded winback notification labeling {window}-day views alongside 7-day dip and {lapsed} lapsed customers."
+            )
+
         elif kind in ("perf_dip", "seasonal_perf_dip"):
             metric = trig_payload.get("metric", "views")
             delta = abs(int(trig_payload.get("delta_pct", 0.1) * 100))
@@ -458,7 +510,7 @@ class Composer:
                 cta="binary_yes_no",
                 send_as="vera",
                 suppression_key=suppression_key,
-                rationale=f"Grounded performance notification referencing exact {delta}% dip in {metric} from trigger."
+                rationale=f"Grounded performance notification referencing exact {delta}% dip in {metric} over {window}."
             )
 
         elif kind in ("perf_spike", "milestone_reached"):
