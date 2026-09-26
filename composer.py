@@ -78,6 +78,8 @@ Your job is to compose ONE grounded, specific, low-friction WhatsApp message bas
 12. TIME WINDOW DISAMBIGUATION: Whenever a message combines numbers or metrics from different time windows (e.g., a 30-day cumulative total alongside a 7-day percentage change, or delta_7d), the message text MUST clearly label each number with its own specific time window (e.g., "views are at 1,200 over the last 30 days, and calls dropped 30% in just the past week" or "over the last 7 days"). Never present numbers from different time frames together without explicitly stating the respective time window for each, so the merchant is never misled into thinking they cover the same period.
 13. DEADLINE URGENCY (APPLIES ONLY TO MERCHANT-FACING MESSAGES, send_as="vera"):
     Whenever a merchant-facing message mentions a deadline date (a regulation compliance cutoff, an audit deadline, or a subscription renewal/expiry), you MUST calculate and explicitly state the number of days remaining from the trigger's timestamp or source date to that deadline. For example: instead of merely saying "comply by 2026-12-15", state "comply in the next 41 days (by Dec 15)" or "comply in the next 15 days (by Dec 15)". More specific urgency = higher engagement score. NEVER apply deadline urgency or cutoff framing to customer-facing appointment reminders (send_as="merchant_on_behalf").
+14. TRIGGER ISOLATION:
+    You are composing a message for ONE specific trigger only. Focus exclusively on the topic or item specified in trigger.payload. If a top_item_id is specified, reference ONLY that digest item and ignore all other items in category.digest entirely. Do not reference facts, regulations, deadlines, or content that belong to a different trigger kind or a different digest item, even if they appear in the category context.
 
 ### TRIGGER KIND FRAMING GUIDELINES:
 - research_digest: Vary structure. You may open with the clinical metric, a direct question about clinical protocols, or the citation itself. Frame around curiosity, clinical relevance, and offer to draft a customer note.
@@ -248,11 +250,21 @@ class Composer:
     ) -> Optional[ComposedMessage]:
         from google.genai import types
 
+        # FIX A: Filter category digest to only include matching top_item_id if present
+        cat_to_pass = category
+        top_item_id = trigger.get("payload", {}).get("top_item_id") if trigger else None
+        if category and top_item_id and "digest" in category:
+            cat_to_pass = dict(category)
+            cat_to_pass["digest"] = [
+                item for item in category.get("digest", [])
+                if item.get("id") == top_item_id
+            ]
+
         prompt_data = {
             "mode": conversation_mode,
             "trigger": trigger,
             "merchant": merchant,
-            "category": category,
+            "category": cat_to_pass,
             "customer": customer,
             "conversation_history": conversation_history or [],
         }
