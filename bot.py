@@ -271,6 +271,25 @@ async def reply(req: ReplyRequest):
         )
 
 
+@app.get("/")
+async def root():
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "service": "magicpin Vera Message Engine",
+            "status": "healthy",
+            "version": "1.0.0",
+            "endpoints": [
+                "/v1/healthz",
+                "/v1/metadata",
+                "/v1/context",
+                "/v1/tick",
+                "/v1/reply"
+            ]
+        },
+    )
+
+
 @app.get("/v1/healthz")
 async def healthz():
     uptime = int(time.time() - START_TIME)
