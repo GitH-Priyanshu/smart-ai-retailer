@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from context_store import ContextStore
 from conversation_store import ConversationStore
+from composer import Composer
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +19,7 @@ load_dotenv()
 START_TIME = time.time()
 context_store = ContextStore()
 conversation_store = ConversationStore()
+composer = Composer()
 
 app = FastAPI(
     title="Vera Message Engine",
@@ -96,9 +98,6 @@ async def tick(req: TickRequest):
         customer_id = trigger.get("customer_id")
         customer = context_store.get("customer", customer_id) if customer_id else None
 
-        is_customer_facing = trigger.get("scope") == "customer" and customer_id is not None
-        send_as = "merchant_on_behalf" if is_customer_facing else "vera"
-
         # Unique conversation ID
         if customer_id:
             conv_id = f"conv_{merchant_id}_{customer_id}_{trigger_id}"
@@ -111,42 +110,49 @@ async def tick(req: TickRequest):
             continue
         seen_convs.add(conv_key)
 
-        # Name for greeting
-        if is_customer_facing and customer:
-            name = customer.get("identity", {}).get("name", "there")
-        else:
-            identity = merchant.get("identity", {})
-            name = identity.get("owner_first_name") or identity.get("name", "there")
+        conv_state = conversation_store.get_or_create(conv_id, merchant_id, customer_id)
+        if conv_state.get("ended"):
+            continue
+
+        # Real Gemini-powered composition (with fallback)
+        composed = composer.compose(
+            category=category,
+            merchant=merchant,
+            trigger=trigger,
+            customer=customer,
+            conversation_history=conv_state.get("turns", []),
+            conversation_mode=conv_state.get("mode", "qualifying"),
+        )
 
         kind = trigger.get("kind", "general")
-        body = f"[STUB] Hi {name}, trigger={kind}"
-        cta = "open_ended"
-        suppression_key = trigger.get("suppression_key") or f"suppress:{merchant_id}:{trigger_id}"
-        rationale = f"Stub action for trigger {trigger_id} on merchant {merchant_id}"
+        name = (
+            customer.get("identity", {}).get("name", "there")
+            if customer
+            else (merchant.get("identity", {}).get("owner_first_name") or merchant.get("identity", {}).get("name", "there"))
+        )
 
         action = {
             "conversation_id": conv_id,
             "merchant_id": merchant_id,
             "customer_id": customer_id,
-            "send_as": send_as,
+            "send_as": composed.send_as,
             "trigger_id": trigger_id,
-            "template_name": "stub_template",
+            "template_name": f"vera_{kind}_v1",
             "template_params": [name, kind],
-            "body": body,
-            "cta": cta,
-            "suppression_key": suppression_key,
-            "rationale": rationale,
+            "body": composed.body,
+            "cta": composed.cta,
+            "suppression_key": composed.suppression_key,
+            "rationale": composed.rationale,
         }
         actions.append(action)
 
         # Log initial outbound message as turn 1 in conversation_store
-        conversation_store.get_or_create(conv_id, merchant_id, customer_id)
         conversation_store.record_turn(
             conversation_id=conv_id,
-            role=send_as,
-            message=body,
+            role=composed.send_as,
+            message=composed.body,
             turn_number=1,
-            extra={"cta": cta, "trigger_id": trigger_id, "rationale": rationale},
+            extra={"cta": composed.cta, "trigger_id": trigger_id, "rationale": composed.rationale},
         )
 
     return JSONResponse(status_code=status.HTTP_200_OK, content={"actions": actions})
@@ -155,7 +161,7 @@ async def tick(req: TickRequest):
 @app.post("/v1/reply")
 async def reply(req: ReplyRequest):
     # Log inbound turn
-    conversation_store.get_or_create(req.conversation_id, req.merchant_id, req.customer_id)
+    conv_state = conversation_store.get_or_create(req.conversation_id, req.merchant_id, req.customer_id)
     conversation_store.record_turn(
         conversation_id=req.conversation_id,
         role=req.from_role,
@@ -164,16 +170,55 @@ async def reply(req: ReplyRequest):
         extra={"received_at": req.received_at},
     )
 
-    # Stub response per Step 2
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={
-            "action": "send",
-            "body": "[STUB reply]",
-            "cta": "open_ended",
-            "rationale": "stub",
-        },
+    merchant = context_store.get("merchant", req.merchant_id) if req.merchant_id else None
+    customer = context_store.get("customer", req.customer_id) if req.customer_id else None
+
+    # Compose reply decision
+    decision = composer.compose_reply(
+        merchant=merchant,
+        trigger=None,
+        customer=customer,
+        conversation_history=conv_state.get("turns", []),
+        inbound_message=req.message,
+        conversation_mode=conv_state.get("mode", "qualifying"),
     )
+
+    # If action is send, record the outbound message
+    if decision.action == "send" and decision.body:
+        conversation_store.record_turn(
+            conversation_id=req.conversation_id,
+            role="vera",
+            message=decision.body,
+            extra={"action": "send", "cta": decision.cta, "rationale": decision.rationale},
+        )
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "action": "send",
+                "body": decision.body,
+                "cta": decision.cta,
+                "rationale": decision.rationale,
+            },
+        )
+    elif decision.action == "wait":
+        conversation_store.set_wait(req.conversation_id, decision.wait_seconds or 14400)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "action": "wait",
+                "wait_seconds": decision.wait_seconds or 14400,
+                "rationale": decision.rationale,
+            },
+        )
+    else:
+        conversation_store.set_ended(req.conversation_id, True)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "action": "end",
+                "rationale": decision.rationale,
+            },
+        )
 
 
 @app.get("/v1/healthz")
