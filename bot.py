@@ -311,7 +311,7 @@ async def metadata():
         content={
             "team_name": os.getenv("TEAM_NAME", "Team Vera"),
             "team_members": ["Priyanshu Saklani"],
-            "model": "gemini-2.5-flash-lite",
+            "model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
             "approach": (
                 "Deterministic message-composition engine with single-prompt "
                 "kind-aware framing, strict factual grounding, and pre/post guards"
