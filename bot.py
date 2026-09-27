@@ -334,7 +334,7 @@ async def metadata():
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
-            "team_name": os.getenv("TEAM_NAME", "Team Vera"),
+            "team_name": os.getenv("TEAM_NAME", "Team Strawhats"),
             "team_members": ["Priyanshu Saklani"],
             "model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
             "approach": (
