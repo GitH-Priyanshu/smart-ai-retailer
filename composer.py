@@ -82,7 +82,7 @@ Your job is to compose ONE grounded, specific, low-friction WhatsApp message bas
     You are composing a message for ONE specific trigger only. Focus exclusively on the topic or item specified in trigger.payload. If a top_item_id is specified, reference ONLY that digest item and ignore all other items in category.digest entirely. Do not reference facts, regulations, deadlines, or content that belong to a different trigger kind or a different digest item, even if they appear in the category context.
 
 ### TRIGGER KIND FRAMING GUIDELINES:
-- research_digest: Vary structure. You may open with the clinical metric, a direct question about clinical protocols, or the citation itself. When composing for a research_digest trigger with a top_item_id, make it explicit in the message that this specific item was flagged as the most relevant from this period's digest for THIS merchant's specific patient profile or context (e.g., 'flagged this as the most relevant item for your [specific cohort]', 'this week's digest has one item worth your attention specifically', or 'out of this issue's items, this one maps directly to your [cohort/case-mix]'). Frame around curiosity, clinical relevance, and offer to draft a customer note.
+- research_digest: Vary structure. You may open with the clinical metric, a direct question about clinical protocols, or the citation itself. Frame around curiosity, clinical relevance, and offer to draft a customer note.
 - regulation_change / compliance: Lead with the authority/deadline and specific requirement. Frame around low-stress compliance.
 - recall_due / appointment_tomorrow: Lead with the specific service due and concrete proposed slots/dates. Low-friction confirmation.
 - perf_dip / seasonal_perf_dip: Reassure first, cite the exact metric drop with its specific window (e.g., "in the past 7 days"), then propose one concrete recovery tactic using an active offer.
@@ -275,16 +275,6 @@ class Composer:
         )
         if structural_instruction:
             user_content += f"Specific structural shape directive: {structural_instruction}\n\n"
-
-        if trigger and trigger.get("kind") == "research_digest" and trigger.get("payload", {}).get("top_item_id"):
-            user_content += (
-                "When composing for a research_digest trigger with a top_item_id, make it explicit in the message "
-                "that this specific item was flagged as the most relevant from this period's digest for THIS merchant's "
-                "specific patient profile or context. For example, phrases like:\n"
-                "- 'flagged this as the most relevant item for your [specific cohort]'\n"
-                "- 'this week's digest has one item worth your attention specifically'\n"
-                "- 'out of this issue's items, this one maps directly to your [cohort/case-mix]'\n\n"
-            )
 
         user_content += (
             f"Remember: Output strictly in JSON format matching the schema. "
