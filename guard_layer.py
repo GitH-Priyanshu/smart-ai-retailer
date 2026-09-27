@@ -246,11 +246,32 @@ class GuardLayer:
                 elif cat == "pharmacies" or (merchant_id and "pharmacy" in merchant_id):
                     topic_fact = "the prescription refill schedule"
 
+            action_ask = "want me to draft the next step for you to review? Just reply YES."
+            if "fluoride" in topic_fact or "jida" in topic_fact:
+                cohort_count = merchant.get("customer_aggregate", {}).get("high_risk_adult_count", 124) if merchant else 124
+                action_ask = f"want me to go ahead and draft the patient WhatsApp for your {cohort_count} high-risk adults? Just reply YES."
+            elif "radiograph" in topic_fact or "dci" in topic_fact:
+                action_ask = "want me to share the SOP checklist to audit your X-ray setup before Dec 15? Just reply YES."
+            elif "ida" in topic_fact or "digital impressions" in topic_fact:
+                action_ask = "want me to block a complimentary seat for you in the digital impressions session? Just reply YES."
+            elif "bridal" in topic_fact:
+                action_ask = "want me to lock in the 30-day skin-prep schedule for your upcoming bridal bookings? Just reply YES."
+            elif "performance" in topic_fact or "metrics" in topic_fact:
+                action_ask = "want me to feature your active offer on your profile to recover momentum? Just reply YES."
+            elif "recall" in topic_fact:
+                action_ask = "want me to prepare the recall schedule slots for your patients this week? Just reply YES."
+            elif "dining" in topic_fact:
+                action_ask = "want me to prepare your promotional offer broadcast for this weekend's diners? Just reply YES."
+            elif "fitness" in topic_fact:
+                action_ask = "want me to send the membership renewal link to your upcoming renewals? Just reply YES."
+            elif "refill" in topic_fact:
+                action_ask = "want me to line up the prescription refills for your patients due this week? Just reply YES."
+
             return {
                 "action": "send",
-                "body": f"{owner_name}, just checking if you had a moment to look at {topic_fact} I shared?",
-                "cta": "open_ended",
-                "rationale": f"First auto-reply detected. Following up specifically with {owner_name} regarding {topic_fact}.",
+                "body": f"{owner_name}, just a quick follow-up on {topic_fact} — {action_ask}",
+                "cta": "binary_yes_no",
+                "rationale": f"First auto-reply detected. Following up specifically with {owner_name} regarding {topic_fact} with a concrete binary action.",
             }
         elif count == 2:
             return {
