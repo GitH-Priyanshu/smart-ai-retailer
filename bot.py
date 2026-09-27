@@ -341,9 +341,9 @@ async def metadata():
                 "Deterministic message-composition engine with single-prompt "
                 "kind-aware framing, strict factual grounding, and pre/post guards"
             ),
-            "contact_email": os.getenv("CONTACT_EMAIL", "priyanshu@example.com"),
+            "contact_email": os.getenv("CONTACT_EMAIL", "priyanshusaklani2022@gmail.com"),
             "version": "1.0.0",
-            "submitted_at": "2026-09-26T18:25:00Z",
+            "submitted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         },
     )
 
